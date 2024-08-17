@@ -45,8 +45,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Desatomat is a parser compiler which outputs C++")
 
     # Add flags with True as default, and allow setting them to False
-    parser.add_argument('--ll', action='store_false', default=True, help='Enable or disable ll flag')
-    parser.add_argument('--q', action='store_false', default=True, help='Enable or disable q flag')
+    parser.add_argument('--ll', action='store_true', default=True, help='LL1 flag, enabled regardless')
+    parser.add_argument('--q', action='store_true', default=True, help='Q-graammer flag, enabled regardless')
 
      # Add standard arguments with defaults
     parser.add_argument('--input', type=argparse.FileType('r'), required=True, help='Input file path or "-" for stdin')
