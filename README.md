@@ -1,7 +1,7 @@
 # Desatomat
 Open-source implementation of Desatomat and it's Extended Desátomatu Syntax. This is my effort to reverse-engineer the closed-source Desatomat tool.
 
-This tool aims to cover the features used by the [Compile Time Regular Expressions](https://github.com/hanickadot/compile-time-regular-expressions) library grammer. It amins to be a drop in replacement.
+This tool aims to cover the features used by the [Compile Time Regular Expressions](https://github.com/hanickadot/compile-time-regular-expressions) library grammer. It aims to be a drop in replacement.
 
 ## Usage
 
