@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 dependencies = [
-    "lark-parser",
+    "lark",
     "argparse"
 ]
 
