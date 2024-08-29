@@ -41,19 +41,81 @@ from enum import Enum, auto     # Needed to enumerate rule_atom
 import logging                  # Needed to log to stdout
 from sys import stdout          # Needed for logging
 from pprint import pformat      # Needed for logging
-from typing import List, Dict   # Needed to provide type hints to vscode
+from typing import List, Dict, Optional, Any # Needed to provide type hints to vscode
 from unicodedata import name as unicode_name # Needed to covert characters into word form
+from collections import UserDict # For multidict
 
+logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
 logging_level=logging.INFO
 
-class rule_enum(Enum):
+# Further down we use getattr(x,y)
+# Some of the types in here need to corrospond with the rules names
+# in the grammer in order to use getattr
+class desatomat_type(Enum):
     atom = 0
     terminal = auto()
     string = auto()
     non_terminal = auto()
     semantic_action = auto()
     epsilon = auto()
+    positive_set = auto()
+    negitive_set = auto()
+    NUM_OF_ENUMS = auto()
+
+class Symbol:
+    def __init__(self, value, symbol_type):
+        self.value = value
+        self.type = symbol_type
+
+    def __hash__(self):
+        if isinstance(self.value, set):
+            return hash((frozenset(self.value), self.type))
+        elif isinstance(self.value, list):
+            # Cast the list to a tuple to be able to hash
+            return hash((tuple(self.value), self.type))
+        elif isinstance(self.value, dict):
+            return hash(frozenset(self.value.items()))
+        return hash((self.value, self.type))
+
+    def __eq__(self, other):
+        if isinstance(other, Symbol):
+            return self.value == other.value and self.type == other.type
+        return False
+
+    def __repr__(self):
+        if isinstance(self.value, str):
+            return f"Symbol('{self.value}', {self.type})"
+        else:
+            return f"Symbol({self.value}, {self.type})"
+    
+    def is_non_terminal(self):
+        return self.type == desatomat_type.non_terminal
+
+    def is_semantic_action(self):
+        return self.type == desatomat_type.semantic_action
+
+    def is_terminal(self):
+        return \
+            self.is_string() or \
+            self.is_atom() or \
+            self.is_set() or \
+            self.type == desatomat_type.terminal
+    
+    def is_positive_set(self):
+        return self.type == desatomat_type.positive_set
+
+    def is_negitive_set(self):
+        return self.type == desatomat_type.negitive_set
+
+    def is_set(self):
+        return self.is_positive_set() or self.is_negitive_set()
+
+    def is_atom(self)
+        return self.type == desatomat_type.atom
+
+    def is_string(self):
+        return self.type == desatomat_type.string
 
 # Define the grammar
 grammar = r"""
@@ -61,17 +123,18 @@ grammar = r"""
 
     comment: /#.*/
 
-    rule_statement: NAME /(-?->)|(::=)|(:)/ rule_list 
+    rule_statement: SINGLE_NAME /(-?->)|(::=)|(:)/ rule_list 
     rule_list: rule ("|" rule)*
-    rule: epsilon_empty | ((NAME ":")? rule_content)
+    rule: epsilon_empty | ((SINGLE_NAME ":")? rule_content)
     rule_content: rule_atom ("," rule_atom)* ","?
-    rule_atom: epsilon | ATOM | terminal | string | non_terminal | semantic_action
+    rule_atom: epsilon | atom | terminal | string | non_terminal | semantic_action
     epsilon: (EPSILON_AT|EPSILON)
     # Empty rule can signify epsilon
     epsilon_empty:
 
     terminal: NAME | "*" NAME | NAME EPSILON_AT ATOM
     string: "\"" TEXT "\""
+    atom: ATOM
     TEXT: /((\\.)|[^"])+/
     non_terminal: "<" NAME ">"
     semantic_action: "[" NAME "]"
@@ -80,14 +143,29 @@ grammar = r"""
     minus_sigma: "sigma" "-"
     set_contents: ATOM ("," ATOM)* ","?
     
-    NAME: /[a-zA-Z_0-9]+/
-    EPSILON_AT: "@"
+    SINGLE_NAME: /[a-zA-Z_][a-zA-Z_0-9]*/
+    NAME: /[a-zA-Z][a-zA-Z_0-9]+/
+    EPSILON_AT: /(?<!\\)@/
     EPSILON: "epsilon"
     ATOM: /\\?[^\s]/
     SPACES: /[ \t\f]+/
     WHITESPACES: /\s+/ 
     %ignore WHITESPACES
 """
+
+def unescape_character(char:str):
+    if len(char) > 2:
+        raise Exception('Character length greater than 2')
+    if char[0] == '\\': 
+        res_char = char.encode('latin-1', 'backslashreplace').decode('unicode-escape')
+        # The encoder will not decode regualar characters.
+        # If it doesn't the length will be 2
+        if len(res_char) == 2:
+            return res_char[-1]
+        else:
+            return res_char
+    else:
+        return char
 
 class SpaceTransformer(Transformer):
     def WHITESPACES(self, tok: Token):
@@ -98,20 +176,15 @@ class SpaceTransformer(Transformer):
 class RuleTransformer(Transformer):
     def rule_atom(self, tree: Tree):
         rule_atom = tree[0]
-        if isinstance(rule_atom, Token):
-            if rule_atom.type == 'ATOM':
-                return {"value":rule_atom.value, "type":rule_enum.atom}
-            else:
-                # This *shouldn't* happen, but handling anyway
-                raise Exception("Unknown rule_atom Token")
-        else:
-            type = getattr(rule_enum, rule_atom.data)
-            value = rule_atom.children[0].value
-            return {"value":value, "type":type}
+        value = rule_atom.children[0].value
+        if rule_atom.data == "atom":
+            value = unescape_character(value)
+        type = getattr(desatomat_type, rule_atom.data)
+        return Symbol(value, type)
     def rule(self, tok):
         rule_tok = tok[0]
         if rule_tok.data == "epsilon_empty":
-            return [{"value":"epsilon", "type":rule_enum.epsilon}]
+            return [Symbol("epsilon", desatomat_type.epsilon)]
         else:
             return rule_tok.children
 
@@ -128,17 +201,23 @@ class SetTransformer(Transformer):
         res = [token.value for token in ATOMS]
 
         # Ignore the '\' at the beginning of the string
-        res = [token if token[0] != '\\' else token[-1] for token in res]
+        res = [unescape_character(token) for token in res]
 
-        # Convert list to string (easier to read for debugging)
-        res = "".join(res)
+        # Make sure elements are not repeated
+        res = set(res)
+        
         return res 
 
+identifier_graph={
+    "nonterminal":{},
+    "terminal":{}
+}
+
 identifier_table={
-    "action":{},
+    "action":set(),
     "nonterminal":{},
     "terminal":{
-        'other':''
+        'other':Symbol([], desatomat_type.negitive_set)
     }
 }
 
@@ -150,10 +229,11 @@ class add_identifers(Visitor):
         set_contents = tree.children[-1]
 
         # If set_definition has 3 children then minus_sigma is definately in it
+        set_type = desatomat_type.positive_set
         if len(tree.children) == 3:
-            raise Exception("'sigma-' not supported in sets")
+            set_type = desatomat_type.negitive_set
 
-        identifier_table["terminal"][NAME.value] = set_contents
+        identifier_table["terminal"][NAME.value] = Symbol(set_contents, set_type)
     def rule_statement(self, tree):
         NAME = tree.children[0]
         name = NAME.value
@@ -163,23 +243,97 @@ class add_identifers(Visitor):
         if not name in nonterminal_table:
             nonterminal_table[name] = []
 
-        nonterminal_table[name].append(rules)
+        nonterminal_table[name]+=rules
+
+def make_graph(id_graph, id_table):
+    # Iterate over ["terminal", "nonterminal"]
+    for id_type in ["terminal", "nonterminal"]:
+        for name, content in id_table[id_type].items():
+            id_graph[id_type][name] = {"name":name, "content":content, "visited":False}
+    """
+    for terminal_dict in id_graph["nonterminal"].values():
+        for rule_index, rule in enumerate(terminal_dict['value']):
+            for atom_index, atom in enumerate(rule):
+                match atom['type']:
+                    case desatomat_type.terminal:
+                        id_graph['nonterminal'][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph['terminal'][atom['value']]
+                    case desatomat_type.non_terminal:
+                        id_graph['nonterminal'][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph['nonterminal'][atom['value']]
+
+    """
 
 def add_semantic_action_identifiers(table):
-    actions = {}
+    actions = set()
     for x in table['nonterminal'].values():
-        for y in x:
-            for z in y:
-                for w in z:
-                    if w['type'] == rule_enum.semantic_action:
-                        actions[w['value']] = ''
-    table['action'] = actions.keys()
+        for z in x:
+            for symbol in z:
+                if symbol.is_semantic_action():
+                    actions.add(symbol.value)
+    table['action'] = actions
+
+def break_strings(table):
+    for nonterminal_name, nonterminal in table['nonterminal'].items():
+        for rule_index, rule in list(enumerate(nonterminal)):
+            for item_index, item in list(enumerate(rule)):
+                if item.is_string():
+                    string = item.value
+                    rule_table = table['nonterminal'][nonterminal_name][rule_index]
+                    rule_table.pop(item_index)
+                    for c in reversed(string):
+                        rule_table.insert(item_index, Symbol(c, desatomat_type.atom))
+
+def get_rule_name(items: Dict[str, str]):
+    item_type = items['type']
+    item_value = items['value']
+    if item_type == desatomat_type.atom:
+        if re.search(r"^[a-zA-Z0-9]$", item_value):
+            character_name = item_value
+        else:
+            character_name = unicode_name(item_value).replace(' ', '_').lower()
+        return f"_term_{character_name}"
+    if item_type == desatomat_type.terminal:
+        return f"_term_{item_value}"
+    else:
+        return f"_rule_{item_value}"
 
 def verify_identifiers(table):
-    pass
+    ids = {
+        "nonterminal": set(),
+        "terminal": set()
+    }
+    for x in table['nonterminal'].values():
+        for z in x:
+            for symbol in z:
+                if symbol.is_non_terminal():
+                    ids['nonterminal'].add(symbol.value)
+                elif symbol.is_terminal():
+                    ids['terminal'].add(symbol.value)
 
-def table_to_constexpr_cpp(table:Dict[str, List[List[List[Dict[str, rule_enum]]]]], args):
+    nonterminal_ids = ids['nonterminal']
+    defined_nonterminal_ids = set(table['nonterminal'].keys())
+    remaining_nonterminal_ids = nonterminal_ids - defined_nonterminal_ids
+    if len(remaining_nonterminal_ids) != 0:
+        raise Exception(f'Unknown nonterminal(s): {', '.join(remaining_nonterminal_ids)}')
+    
+    terminal_ids = ids['terminal']
+    defined_terminal_ids = set(table['terminal'].keys())
+    remaining_terminal_ids = terminal_ids - defined_terminal_ids
+    if len(remaining_terminal_ids) != 0:
+        raise Exception(f'Unknown terminal(s): {', '.join(remaining_terminal_ids)}')
+
+def table_to_constexpr_cpp(table:Dict[str, List[List[List[Dict[str, desatomat_type]]]]], args):
     indentation = ' '*4
+    terminal_strings = []
+    for terminal_name, terminal in table['terminal'].items():
+        res = ""
+        type_map = {desatomat_type.negitive_set:"neg_set", desatomat_type.positive_set:"set"}
+        terminal_type_str = ""
+        if len(terminal['value']) == 1 and not terminal['type'] == desatomat_type.negitive_set:
+            terminal_type_str = "term"
+        else:
+            terminal_type_str = type_map[terminal['type']]
+        res = f"using {terminal_name} = ctll::{terminal_type_str}<'{"', '".join(terminal['value'])}'>;"
+        terminal_strings.append(res)
     rule_strings = []
     for rule_name, rule_content in table['nonterminal'].items():
         for rule in rule_content:
@@ -205,6 +359,11 @@ struct {args.grammer_name} {{
 
 {indentation}// 'action' types:
 {indentation}{f"\n{indentation}".join([f"struct {action}: ctll::action {{}};" for action in table['action']])}
+
+{indentation}// 'terminal' types:
+{indentation}namespace terminal {{
+{indentation*2}{f"\n{indentation*2}".join(terminal_strings)}
+{indentation}}} // namespace terminal
 
 {indentation}// (q)LL1 function:
 {indentation}{f"\n{indentation}".join(rule_strings)}
@@ -276,6 +435,11 @@ class SetLoggingLevelAction(argparse.Action):
             parser.error("Invaild logging level specified.")
 
 def parse_args():
+    """
+    Function that handles argparse
+
+    :return: argparse namespace
+    """
     author_strings = [f"{author['name']} <{author['email']}>" for author in AUTHORS]
     author_string_spacing=' '*4
     author_string = f"\n{author_string_spacing}".join(author_strings)
@@ -332,7 +496,7 @@ def parse_args():
     args, remaining_args = parser.parse_known_args()
     
     for arg in remaining_args:
-        if is_accessible_file(arg):
+        if os.path.is_file(arg):
             remaining_args.remove(arg)
             remaining_args += [f"--input={arg}"]
 
@@ -341,7 +505,7 @@ def parse_args():
 
     return args
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
 
     if args.version:
@@ -369,6 +533,9 @@ if __name__ == "__main__":
     tree = parser.parse(input_data)
     
     logger.info("Transforming parse tree")
+    # 1. Remove whitespace tokens
+    # 2. Transform rules into dictionary {"value":value, "type":type}
+    # 3. Transform set contents into a list [1,2,3]
     tree = (SpaceTransformer()*RuleTransformer()*SetTransformer()).transform(tree)
 
     logger.info("Adding identifiers to identifer table")
@@ -378,9 +545,20 @@ if __name__ == "__main__":
     logger.debug("Identifer Table:")
     logger.debug(pformat(identifier_table))
 
-    logger.info("Verifying that add identifers have been defined")
+    logger.info("Checking identifers")
     verify_identifiers(identifier_table)
+    logger.info("Identifers have been checked and all identifiers have been defined")
 
+    logger.info("Turning strings into individual atoms")
+    # Turn "string" into atoms: "abc" -> a,b,c
+    break_strings(identifier_table)
+
+    logger.info("Making graph")
+    make_graph(identifier_graph, identifier_table)
+
+    # Cannot use (pretty) print as it will take forever
+    #logger.debug(identifier_graph)
+    """
     logger.info("Converting table into cpp")
     
     constexpr_cpp = table_to_constexpr_cpp(identifier_table, args)
@@ -392,3 +570,10 @@ if __name__ == "__main__":
 
     with open(args.fname, mode) as f:
         f.write(constexpr_cpp)
+    """
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.exception("%s", repr(e))
