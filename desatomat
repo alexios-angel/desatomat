@@ -43,7 +43,6 @@ from sys import stdout          # Needed for logging
 from pprint import pformat      # Needed for logging
 from typing import List, Dict, Optional, Any # Needed to provide type hints to vscode
 from unicodedata import name as unicode_name # Needed to covert characters into word form
-from collections import UserDict # For multidict
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
