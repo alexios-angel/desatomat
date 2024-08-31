@@ -111,7 +111,7 @@ class Symbol:
     def is_set(self):
         return self.is_positive_set() or self.is_negitive_set()
 
-    def is_atom(self)
+    def is_atom(self):
         return self.type == desatomat_type.atom
 
     def is_string(self):
