@@ -62,7 +62,7 @@ class desatomat_type(Enum):
     negitive_set = auto()
     NUM_OF_ENUMS = auto()
 
-class Symbol:
+class GrammerType:
     def __init__(self, value, symbol_type):
         self.value = value
         self.type = symbol_type
@@ -78,15 +78,15 @@ class Symbol:
         return hash((self.value, self.type))
 
     def __eq__(self, other):
-        if isinstance(other, Symbol):
+        if isinstance(other, GrammerType):
             return self.value == other.value and self.type == other.type
         return False
 
     def __repr__(self):
         if isinstance(self.value, str):
-            return f"Symbol('{self.value}', {self.type})"
+            return f"GrammerType('{self.value}', {self.type})"
         else:
-            return f"Symbol({self.value}, {self.type})"
+            return f"GrammerType({self.value}, {self.type})"
     
     def is_non_terminal(self):
         return self.type == desatomat_type.non_terminal
@@ -179,11 +179,11 @@ class RuleTransformer(Transformer):
         if rule_atom.data == "atom":
             value = unescape_character(value)
         type = getattr(desatomat_type, rule_atom.data)
-        return Symbol(value, type)
+        return GrammerType(value, type)
     def rule(self, tok):
         rule_tok = tok[0]
         if rule_tok.data == "epsilon_empty":
-            return [Symbol("epsilon", desatomat_type.epsilon)]
+            return [GrammerType("epsilon", desatomat_type.epsilon)]
         else:
             return rule_tok.children
 
@@ -216,7 +216,7 @@ identifier_table={
     "action":set(),
     "nonterminal":{},
     "terminal":{
-        'other':Symbol([], desatomat_type.negitive_set)
+        'other':GrammerType([], desatomat_type.negitive_set)
     }
 }
 
@@ -232,7 +232,7 @@ class add_identifers(Visitor):
         if len(tree.children) == 3:
             set_type = desatomat_type.negitive_set
 
-        identifier_table["terminal"][NAME.value] = Symbol(set_contents, set_type)
+        identifier_table["terminal"][NAME.value] = GrammerType(set_contents, set_type)
     def rule_statement(self, tree):
         NAME = tree.children[0]
         name = NAME.value
@@ -279,7 +279,7 @@ def break_strings(table):
                     rule_table = table['nonterminal'][nonterminal_name][rule_index]
                     rule_table.pop(item_index)
                     for c in reversed(string):
-                        rule_table.insert(item_index, Symbol(c, desatomat_type.atom))
+                        rule_table.insert(item_index, GrammerType(c, desatomat_type.atom))
 
 def get_rule_name(items: Dict[str, str]):
     item_type = items['type']
