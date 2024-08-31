@@ -127,7 +127,7 @@ grammar = r"""
     rule_list: rule ("|" rule)*
     rule: epsilon_empty | ((SINGLE_NAME ":")? rule_content)
     rule_content: rule_atom ("," rule_atom)* ","?
-    rule_atom: epsilon | atom | terminal | string | non_terminal | semantic_action
+    rule_atom: epsilon | atom | string | terminal | non_terminal | semantic_action
     epsilon: (EPSILON_AT|EPSILON)
     # Empty rule can signify epsilon
     epsilon_empty:
@@ -306,7 +306,7 @@ def verify_identifiers(table):
             for symbol in z:
                 if symbol.is_non_terminal():
                     ids['nonterminal'].add(symbol.value)
-                elif symbol.is_terminal():
+                elif symbol.value == desatomat_type.terminal:
                     ids['terminal'].add(symbol.value)
 
     nonterminal_ids = ids['nonterminal']
