@@ -32,17 +32,18 @@ LICENSE="MIT"
 
 # Module lark needed to parse EDS file
 from lark import Lark, Token, Transformer, Discard, Visitor, Tree
-import argparse                 # Needed to handle cmd line arguments
-import os                       # Needed for file handling
-from io import TextIOWrapper    # Needed to provide type hint for argparse.Action
-from pathlib import Path        # Needed for filenames in argparse
-import re                       # Needed to validate cpp identifer names
-from enum import Enum, auto     # Needed to enumerate rule_atom
-import logging                  # Needed to log to stdout
-from sys import stdout          # Needed for logging
-from pprint import pformat      # Needed for logging
-from typing import List, Dict, Optional, Any # Needed to provide type hints to vscode
-from unicodedata import name as unicode_name # Needed to covert characters into word form
+import argparse                     # Needed to handle cmd line arguments
+import os                           # Needed for file handling
+from io import TextIOWrapper        # Needed to provide type hint for argparse.Action
+from pathlib import Path            # Needed for filenames in argparse
+import re                           # Needed to validate cpp identifer names
+from enum import Enum, auto         # Needed to enumerate rule_atom
+import logging                      # Needed to log to stdout
+from sys import stdout              # Needed for logging
+from pprint import pformat          # Needed for logging
+from collections import defaultdict # Needed for first follow, and left recursion
+from typing import List, Dict, Set  # Needed to provide type hints to vscode
+from collections import UserList    # Needed to create HashableList
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
@@ -62,6 +63,14 @@ class desatomat_type(Enum):
     negitive_set = auto()
     NUM_OF_ENUMS = auto()
 
+class HashableList(UserList):
+    def __hash__(self):
+        return hash(tuple(self.data))
+    """
+    def __repr__(self):
+        return f"HashableList({self.data!r})"
+    """
+
 class GrammerType:
     def __init__(self, value, symbol_type):
         self.value = value
@@ -74,20 +83,22 @@ class GrammerType:
             # Cast the list to a tuple to be able to hash
             return hash((tuple(self.value), self.type))
         elif isinstance(self.value, dict):
-            return hash(frozenset(self.value.items()))
+            return hash((frozenset(self.value.items()), self.type))
         return hash((self.value, self.type))
 
     def __eq__(self, other):
         if isinstance(other, GrammerType):
-            return self.value == other.value and self.type == other.type
+            return (self.value, self.type) == (other.value, other.type)
         return False
 
     def __repr__(self):
-        if isinstance(self.value, str):
-            return f"GrammerType('{self.value}', {self.type})"
-        else:
-            return f"GrammerType({self.value}, {self.type})"
-    
+        return f"GrammerType({self.value!r}, {self.type})"
+ 
+    def __str__(self):
+        if self.type == desatomat_type.semantic_action:
+            return f"{{{self.value}}}"
+        return self.value
+
     def is_non_terminal(self):
         return self.type == desatomat_type.non_terminal
 
@@ -95,12 +106,18 @@ class GrammerType:
         return self.type == desatomat_type.semantic_action
 
     def is_terminal(self):
-        return \
-            self.is_string() or \
-            self.is_atom() or \
-            self.is_set() or \
-            self.type == desatomat_type.terminal
-    
+        return self.type in (
+            desatomat_type.atom,
+            desatomat_type.string,
+            desatomat_type.positive_set,
+            desatomat_type.negitive_set,
+            desatomat_type.epsilon,
+            desatomat_type.terminal
+        )
+
+    def is_named_terminal(self):
+        return self.type == desatomat_type.terminal
+
     def is_positive_set(self):
         return self.type == desatomat_type.positive_set
 
@@ -108,7 +125,10 @@ class GrammerType:
         return self.type == desatomat_type.negitive_set
 
     def is_set(self):
-        return self.is_positive_set() or self.is_negitive_set()
+        return self.type in (
+            desatomat_type.positive_set,
+            desatomat_type.negitive_set
+        )
 
     def is_atom(self):
         return self.type == desatomat_type.atom
@@ -116,13 +136,196 @@ class GrammerType:
     def is_string(self):
         return self.type == desatomat_type.string
 
+EPSILON = GrammerType("epsilon", desatomat_type.epsilon)
+
+def compute_first(grammar: Dict[str, List[List[GrammerType]]]):
+    first = {non_terminal: set() for non_terminal in grammar}
+    first.update({terminal: {terminal} for rule in grammar.values() for production in rule for terminal in production if is_terminal(terminal)})
+    first[EPSILON] = {EPSILON}
+
+    while True:
+        updated = False
+        for non_terminal, rules in grammar.items():
+            for production in rules:
+                k = 0
+                while k < len(production) and (production[k].is_terminal() or production[k].is_semantic_action() or EPSILON in first[production[k]]):
+                    if production[k].is_terminal():
+                        if production[k] not in first[non_terminal]:
+                            first[non_terminal].add(production[k])
+                            updated = True
+                        break
+                    elif production[k].is_semantic_action():
+                        k += 1
+                        continue
+                    else:
+                        first[non_terminal] |= first[production[k]] - {EPSILON}
+                    k += 1
+                if k == len(production):
+                    if EPSILON not in first[non_terminal]:
+                        first[non_terminal].add(EPSILON)
+                        updated = True
+        if not updated:
+            break
+    return first
+
+def compute_follow(grammar: Dict[str, List[List[GrammerType]]], first: Dict[str, Set]):
+    follow = {non_terminal: set() for non_terminal in grammar}
+    start_symbol = next(iter(grammar))
+    follow[start_symbol].add(GrammerType("$", desatomat_type.terminal))
+
+    while True:
+        updated = False
+        for non_terminal, rules in grammar.items():
+            for production in rules:
+                for i, symbol in enumerate(production):
+                    if symbol.is_non_terminal():
+                        if i == len(production) - 1:
+                            if follow[non_terminal] - follow[symbol]:
+                                follow[symbol] |= follow[non_terminal]
+                                updated = True
+                        else:
+                            j = i + 1
+                            while j < len(production) and production[j].is_semantic_action():
+                                j += 1
+                            if j < len(production):
+                                next_first = first[production[j]] if production[j].is_non_terminal() else {production[j]}
+                                if next_first - {EPSILON} - follow[symbol]:
+                                    follow[symbol] |= next_first - {EPSILON}
+                                    updated = True
+                                if EPSILON in next_first:
+                                    if follow[non_terminal] - follow[symbol]:
+                                        follow[symbol] |= follow[non_terminal]
+                                        updated = True
+                            else:
+                                if follow[non_terminal] - follow[symbol]:
+                                    follow[symbol] |= follow[non_terminal]
+                                    updated = True
+        if not updated:
+            break
+    return follow
+
+def construct_parse_table(grammar: Dict[str, List[List[GrammerType]]], first: Dict[str, Set], follow: Dict[str, Set]):
+    parse_table = defaultdict(dict)
+    
+    for non_terminal, rules in grammar.items():
+        for production in rules:
+            first_of_production = set()
+            k = 0
+            while k < len(production) and (production[k].is_terminal() or production[k].is_semantic_action()) or EPSILON in first[production[k]]:
+                if production[k].is_terminal():
+                    first_of_production.add(production[k])
+                    break
+                elif production[k].is_semantic_action():
+                    k += 1
+                    continue
+                else:
+                    first_of_production |= first[production[k]] - {EPSILON}
+                k += 1
+            if k == len(production):
+                first_of_production.add(EPSILON)
+            
+            for terminal in first_of_production - {EPSILON}:
+                if terminal in parse_table[non_terminal]:
+                    raise ValueError(f"Grammar is not LL(1): Conflict for {non_terminal.value} -> {[str(s) for s in production]} on {terminal.value}")
+                parse_table[non_terminal][terminal] = production
+            
+            if EPSILON in first_of_production:
+                for terminal in follow[non_terminal]:
+                    if terminal in parse_table[non_terminal]:
+                        raise ValueError(f"Grammar is not LL(1): Conflict for {non_terminal.value} -> {[str(s) for s in production]} on {terminal.value}")
+                    parse_table[non_terminal][terminal] = production
+    
+    return parse_table
+
+def left_factor(grammar: Dict[str, Set[List[GrammerType]]]):
+    new_grammar = {}
+    updated = False
+    for non_terminal, productions in grammar.items():
+        new_productions = []
+        prefixes = defaultdict(set)
+        
+        for production in productions:
+            if production:
+                prefix = []
+                for symbol in production:
+                    if symbol.is_semantic_action():
+                        prefix.append(symbol)
+                    else:
+                        prefix.append(symbol)
+                        break
+                prefixes[tuple(prefix)].add(production[len(prefix):])
+            else:
+                new_productions.append([EPSILON])
+        
+        for prefix, suffixes in prefixes.items():
+            if len(suffixes) == 1:
+                new_productions.append(HashableList(prefix) + HashableList(suffixes)[0])
+            else:
+                updated = True
+                i = 2
+                new_non_terminal = GrammerType(f"{non_terminal}_{i}", desatomat_type.non_terminal)
+                while new_non_terminal in grammar or new_non_terminal in new_grammar:
+                    new_non_terminal.value = f"{non_terminal}_{i}"
+                    i += 1
+                new_productions.append(HashableList(prefix) + HashableList([new_non_terminal]))
+                new_grammar[new_non_terminal] = suffixes
+        
+        new_grammar[non_terminal] = new_productions
+    
+    return new_grammar, updated
+
+def eliminate_left_recursion(grammar: Dict[str, Set[List[GrammerType]]]):
+    non_terminals = list(grammar.keys())
+    for i, A in enumerate(non_terminals):
+        for j in range(i):
+            B = non_terminals[j]
+            new_productions = HashableList([])
+            for production in grammar[A]:
+                if production and production[0] == B:
+                    for gamma in grammar[B]:
+                        new_productions.append(gamma + production[1:])
+                else:
+                    new_productions.append(production)
+            grammar[A] = new_productions
+        
+        remove_immediate_left_recursion(grammar, A)
+    
+    return grammar
+
+def remove_immediate_left_recursion(grammar: Dict[str, Set[List[GrammerType]]], A:GrammerType):
+    alpha_productions = HashableList([])
+    beta_productions = HashableList([])
+    
+    for production in grammar[A]:
+        if production and production[0] == A:
+            alpha_productions.append(production[1:])
+        else:
+            beta_productions.append(production)
+    
+    if alpha_productions:
+        i = 0
+        new_non_terminal = GrammerType(f"{A.value}'", desatomat_type.non_terminal)
+        while new_non_terminal.value in grammar:
+            new_non_terminal.value = f"{A.value}_{i}"
+            i += 1
+        
+        grammar[A] = [beta + [new_non_terminal] for beta in beta_productions] or [[new_non_terminal]]
+        grammar[new_non_terminal] = [alpha + [new_non_terminal] for alpha in alpha_productions] + [[EPSILON]]
+
+def stringify_grammar(grammar: Dict[str, Set[List[GrammerType]]]):
+    res = []
+    for non_terminal, rules in grammar.items():
+        productions = f"\n{' '*4}| ".join([" ".join([str(s) for s in rule]) for rule in rules])
+        res.append(f"{non_terminal} ->\n{' '*(4+len("| "))}{productions}")
+    return '\n'.join(res)
+
 # Define the grammar
 grammar = r"""
     start: (SPACES? (rule_statement | set_definition | comment)? WHITESPACES?)*
 
     comment: /#.*/
 
-    rule_statement: SINGLE_NAME /(-?->)|(::=)|(:)/ rule_list 
+    rule_statement: SINGLE_NAME ARROW rule_list 
     rule_list: rule ("|" rule)*
     rule: epsilon_empty | ((SINGLE_NAME ":")? rule_content)
     rule_content: rule_atom ("," rule_atom)* ","?
@@ -142,6 +345,7 @@ grammar = r"""
     minus_sigma: "sigma" "-"
     set_contents: ATOM ("," ATOM)* ","?
     
+    ARROW: "->"
     SINGLE_NAME: /[a-zA-Z_][a-zA-Z_0-9]*/
     NAME: /[a-zA-Z][a-zA-Z_0-9]+/
     EPSILON_AT: /(?<!\\)@/
@@ -183,9 +387,9 @@ class RuleTransformer(Transformer):
     def rule(self, tok):
         rule_tok = tok[0]
         if rule_tok.data == "epsilon_empty":
-            return [GrammerType("epsilon", desatomat_type.epsilon)]
+            return HashableList([GrammerType("epsilon", desatomat_type.epsilon)])
         else:
-            return rule_tok.children
+            return HashableList(rule_tok.children)
 
 class SetTransformer(Transformer):
     def set_contents(self, tree):
@@ -223,7 +427,7 @@ identifier_table={
 class add_identifers(Visitor):
     def set_definition(self, tree):
         # minus_sigma not guaranteed to be in set_definition's children.
-        # Anyway, CTRE does not use minus_sigma so we are not handling it
+        # Note: CTRE does not use minus_sigma
         NAME = tree.children[0]
         set_contents = tree.children[-1]
 
@@ -240,16 +444,15 @@ class add_identifers(Visitor):
         rules = tree.children[-1].children
         nonterminal_table = identifier_table['nonterminal']
         if not name in nonterminal_table:
-            nonterminal_table[name] = []
+            nonterminal_table[name] = set()
 
-        nonterminal_table[name]+=rules
-
+        nonterminal_table[name] |= set(rules)
+"""
 def make_graph(id_graph, id_table):
     # Iterate over ["terminal", "nonterminal"]
     for id_type in ["terminal", "nonterminal"]:
         for name, content in id_table[id_type].items():
             id_graph[id_type][name] = {"name":name, "content":content, "visited":False}
-    """
     for terminal_dict in id_graph["nonterminal"].values():
         for rule_index, rule in enumerate(terminal_dict['value']):
             for atom_index, atom in enumerate(rule):
@@ -259,10 +462,11 @@ def make_graph(id_graph, id_table):
                     case desatomat_type.non_terminal:
                         id_graph['nonterminal'][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph['nonterminal'][atom['value']]
 
-    """
+"""
 
 def add_semantic_action_identifiers(table):
     actions = set()
+    print(pformat(table))
     for x in table['nonterminal'].values():
         for z in x:
             for symbol in z:
@@ -270,32 +474,19 @@ def add_semantic_action_identifiers(table):
                     actions.add(symbol.value)
     table['action'] = actions
 
-def break_strings(table):
+def break_strings(table: Dict[str, Dict[str, List[List[GrammerType]]]]):
     for nonterminal_name, nonterminal in table['nonterminal'].items():
         for rule_index, rule in list(enumerate(nonterminal)):
             for item_index, item in list(enumerate(rule)):
                 if item.is_string():
                     string = item.value
-                    rule_table = table['nonterminal'][nonterminal_name][rule_index]
+                    production = list(table['nonterminal'][nonterminal_name])
+                    rule_table = production[rule_index]
                     rule_table.pop(item_index)
-                    for c in reversed(string):
-                        rule_table.insert(item_index, GrammerType(c, desatomat_type.atom))
+                    for character in reversed(string):
+                        rule_table.insert(item_index, GrammerType(character, desatomat_type.atom))
 
-def get_rule_name(items: Dict[str, str]):
-    item_type = items['type']
-    item_value = items['value']
-    if item_type == desatomat_type.atom:
-        if re.search(r"^[a-zA-Z0-9]$", item_value):
-            character_name = item_value
-        else:
-            character_name = unicode_name(item_value).replace(' ', '_').lower()
-        return f"_term_{character_name}"
-    if item_type == desatomat_type.terminal:
-        return f"_term_{item_value}"
-    else:
-        return f"_rule_{item_value}"
-
-def verify_identifiers(table):
+def verify_identifiers(table: Dict[str, Dict[str, List[List[GrammerType]] ] ]):
     ids = {
         "nonterminal": set(),
         "terminal": set()
@@ -305,7 +496,7 @@ def verify_identifiers(table):
             for symbol in z:
                 if symbol.is_non_terminal():
                     ids['nonterminal'].add(symbol.value)
-                elif symbol.value == desatomat_type.terminal:
+                elif symbol.is_named_terminal():
                     ids['terminal'].add(symbol.value)
 
     nonterminal_ids = ids['nonterminal']
@@ -375,10 +566,10 @@ struct {args.grammer_name} {{
 """
     return ret.strip()
 
-def is_accessible(path):
+def is_accessible(path) -> bool:
     return os.access(path, os.R_OK)
 
-def is_accessible_file(filepath):
+def is_accessible_file(filepath) -> bool:
     """
     Check if a file exists and is readable.
 
@@ -387,7 +578,7 @@ def is_accessible_file(filepath):
     """
     return os.path.isfile(filepath) and is_accessible(filepath)
 
-def is_accessible_dir(dirpath):
+def is_accessible_dir(dirpath) -> bool:
     """
     Check if a directory exists and is readable.
 
@@ -552,8 +743,27 @@ def main():
     # Turn "string" into atoms: "abc" -> a,b,c
     break_strings(identifier_table)
 
-    logger.info("Making graph")
-    make_graph(identifier_graph, identifier_table)
+    logger.debug("-"*50)
+    logger.debug("Original Grammar:")
+    logger.debug("-"*50)
+    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+    
+    identifier_table['nonterminal'] = eliminate_left_recursion(identifier_table['nonterminal']) 
+    logger.debug("-"*50)
+    logger.debug("Grammar after eliminating left recursion:")
+    logger.debug("-"*50)
+    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+    
+    updated = True
+    while updated:
+        identifier_table['nonterminal'], updated = left_factor(identifier_table['nonterminal']) 
+    logger.debug("-"*50)
+    logger.debug("Factored Grammar")
+    logger.debug("-"*50)
+    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+
+    #logger.info("Making graph")
+    #make_graph(identifier_graph, identifier_table)
 
     # Cannot use (pretty) print as it will take forever
     #logger.debug(identifier_graph)
@@ -575,4 +785,4 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logger.exception("%s", repr(e))
+        logger.exception(f"error: {str(e)}")
