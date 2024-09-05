@@ -43,7 +43,7 @@ from sys import stdout              # Needed for logging
 from pprint import pformat          # Needed for logging
 from collections import defaultdict # Needed for first follow, and left recursion
 from typing import List, Dict, Set  # Needed to provide type hints to vscode
-from collections import UserList    # Needed to create HashableList
+from collections import UserList, OrderedDict    # Needed to create HashableList and OrderedSet
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
@@ -63,9 +63,164 @@ class desatomat_type(Enum):
     negitive_set = auto()
     NUM_OF_ENUMS = auto()
 
+
+class OrderedSet(UserList):
+    def __setitem__(self, index, item):
+        if item not in self.data:
+            return super().__setitem__(index, item)
+        else:
+            super().__setitem__(index, item)
+            data = OrderedDict.fromkeys(self.data)
+            self.data = list(data)
+
+    def add(self, item):
+        self.data.append(item)
+        d = dict.fromkeys(self.data, None)
+        self.data = list(d)
+    
+    def append(self, item):
+        self.add(item)
+    
+    def extend(self, iterable):
+        tmp1 = OrderedDict.fromkeys(iterable, None)
+        tmp2 = OrderedDict.fromkeys(self.data, None)
+        tmp1.update(tmp2)
+        self.data = list(tmp1)
+
+    def copy(self):
+        return OrderedSet(self.data)
+    
+    def union(self, *others):
+        # Returns a new OrderedSet with elements from this set and all others
+        result = OrderedSet(self)
+        for other in others:
+            result.update(other)
+        return result
+
+    def update(self, *others):
+        # Adds elements from other sets or iterables to the set
+        tmp1 = OrderedDict()
+        for other in others:
+            tmp1.update(OrderedDict.fromkeys(other, None))
+        tmp2 = OrderedDict.fromkeys(self.data, None)
+        tmp2.update(tmp1)
+        self.data = list(tmp2)
+
+    def difference(self, *others):
+        # Returns a new OrderedSet with elements in the set but not in others
+        result = OrderedSet(self)
+        for other in others:
+            result.difference_update(other)
+        return result
+    
+    def difference_update(self, *others):
+        # Removes all elements found in other iterables
+        for other in others:
+            for item in other:
+                self.discard(item)
+    
+    def intersection(self, *others):
+        # Returns a new OrderedSet with elements common to the set and all others
+        result = OrderedSet(self)
+        for other in others:
+            result.intersection_update(other)
+        return result
+    
+    def intersection_update(self, *others):
+        # Keeps only elements found in all sets
+        for other in others:
+            for item in self.data:
+                if item not in other:
+                    self.remove(item)
+    
+    def symmetric_difference(self, other):
+        # Returns a new OrderedSet with elements in either the set or the other, but not both
+        return OrderedSet(item for item in self if item not in other) | OrderedSet(item for item in other if item not in self)
+    
+    def symmetric_difference_update(self, other):
+        # Updates the set with elements that are in either the set or the other, but not both
+        for item in other:
+            if item in self:
+                self.discard(item)
+            else:
+                self.add(item)
+    
+    def isdisjoint(self, other):
+        return all(item not in self for item in other)
+    
+    def issubset(self, other):
+        return all(item in other for item in self)
+    
+    def issuperset(self, other):
+        return all(item in self for item in other)
+
+    def remove(self, item):
+        if item in self.data:
+            index = self.data.index(item)
+            del self.data[index]
+        else:
+            raise KeyError(f"Item {item} not found")
+    
+    def discard(self, item):
+        if item in self.data:
+            index = self.data.index(item)
+            del self.data[index]
+    
+    def pop(self, index=-1):
+        item = self.data[index]
+        del self.data[index]
+        return item
+    
+    def popitem(self, last=True):
+        if not self.data:
+            raise KeyError("popitem(): OrderedSet is empty")
+        d = OrderedDict.fromkeys(self.data) 
+        p = d.popitem(last=last)[0]
+        self.data = list(d)
+        return p
+    
+    def get(self, key, default=None):
+        return OrderedDict.fromkeys(self.data).get(key, default)
+
+    """
+    def __repr__(self):
+        return f"OrderedSet({self.data!r})"
+    """
+
+    def __or__(self, other):
+        return self.union(other)
+
+    def __and__(self, other):
+        return self.intersection(other)
+    
+    def __sub__(self, other):
+        return self.difference(other)
+    
+    def __xor__(self, other):
+        return self.symmetric_difference(other)
+    
+    def __add__(self, other):
+        return self.union(other)
+    
+    def __radd__(self, other):
+        result = OrderedSet(other)
+        result.update(self)
+        return result
+
+    def __hash__(self):
+        # Convert the list into a tuple, becuase a tuple is hashable
+        # The (HashableList, ) is there as a salt
+        # It prevents any hash collisions with HashableList
+        # As long as the tuples don't start with (HashableList, ...)
+        return hash( (OrderedSet, tuple(self.data)) )
+
 class HashableList(UserList):
     def __hash__(self):
-        return hash(tuple(self.data))
+        # Convert the list into a tuple, becuase a tuple is hashable
+        # The (HashableList, ) is there as a salt
+        # It prevents any hash collisions with HashableList
+        # As long as the tuples don't start with (HashableList, ...)
+        return hash((HashableList, tuple(self.data)))
     """
     def __repr__(self):
         return f"HashableList({self.data!r})"
@@ -138,7 +293,7 @@ class GrammerType:
 
 EPSILON = GrammerType("epsilon", desatomat_type.epsilon)
 
-def compute_first(grammar: Dict[str, List[List[GrammerType]]]):
+def compute_first(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
     first = {non_terminal: set() for non_terminal in grammar}
     first.update({terminal: {terminal} for rule in grammar.values() for production in rule for terminal in production if is_terminal(terminal)})
     first[EPSILON] = {EPSILON}
@@ -204,7 +359,7 @@ def compute_follow(grammar: Dict[str, List[List[GrammerType]]], first: Dict[str,
             break
     return follow
 
-def construct_parse_table(grammar: Dict[str, List[List[GrammerType]]], first: Dict[str, Set], follow: Dict[str, Set]):
+def construct_parse_table(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]], first: Dict[str, Set], follow: Dict[str, Set]):
     parse_table = defaultdict(dict)
     
     for non_terminal, rules in grammar.items():
@@ -237,12 +392,12 @@ def construct_parse_table(grammar: Dict[str, List[List[GrammerType]]], first: Di
     
     return parse_table
 
-def left_factor(grammar: Dict[str, Set[List[GrammerType]]]):
+def left_factor(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
     new_grammar = {}
     updated = False
     for non_terminal, productions in grammar.items():
         new_productions = []
-        prefixes = defaultdict(set)
+        prefixes = defaultdict(OrderedSet)
         
         for production in productions:
             if production:
@@ -274,7 +429,7 @@ def left_factor(grammar: Dict[str, Set[List[GrammerType]]]):
     
     return new_grammar, updated
 
-def eliminate_left_recursion(grammar: Dict[str, Set[List[GrammerType]]]):
+def eliminate_left_recursion(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
     non_terminals = list(grammar.keys())
     for i, A in enumerate(non_terminals):
         for j in range(i):
@@ -444,9 +599,9 @@ class add_identifers(Visitor):
         rules = tree.children[-1].children
         nonterminal_table = identifier_table['nonterminal']
         if not name in nonterminal_table:
-            nonterminal_table[name] = set()
+            nonterminal_table[name] = OrderedSet()
 
-        nonterminal_table[name] |= set(rules)
+        nonterminal_table[name] |= OrderedSet(rules)
 """
 def make_graph(id_graph, id_table):
     # Iterate over ["terminal", "nonterminal"]
