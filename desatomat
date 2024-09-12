@@ -621,7 +621,6 @@ def make_graph(id_graph, id_table):
 
 def add_semantic_action_identifiers(table):
     actions = set()
-    print(pformat(table))
     for x in table['nonterminal'].values():
         for z in x:
             for symbol in z:
