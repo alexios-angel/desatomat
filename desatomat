@@ -66,12 +66,16 @@ class desatomat_type(Enum):
 
 class OrderedSet(UserList):
     def __setitem__(self, index, item):
-        if item not in self.data:
-            return super().__setitem__(index, item)
+        if item == self.data[index]:
+            return
+        if item in self.data:
+            item_index = self.data.index(item)
+            del self.data[item_index]
+            if item_index <= index:
+                index -= 1
+            self.data.insert(index, item)
         else:
-            super().__setitem__(index, item)
-            data = OrderedDict.fromkeys(self.data)
-            self.data = list(data)
+            self.data[index] = item
 
     def add(self, item):
         self.data.append(item)
@@ -146,13 +150,16 @@ class OrderedSet(UserList):
                 self.add(item)
     
     def isdisjoint(self, other):
-        return all(item not in self for item in other)
+        set_data = set(self.data)
+        return all(item not in set_data for item in other)
     
     def issubset(self, other):
-        return all(item in other for item in self)
+        set_data = set(other)
+        return all(item in set_data for item in self)
     
     def issuperset(self, other):
-        return all(item in self for item in other)
+        set_data = set(other)
+        return all(item in set_data for item in other)
 
     def remove(self, item):
         if item in self.data:
