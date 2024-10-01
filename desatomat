@@ -298,6 +298,20 @@ class GrammerType:
     def is_string(self):
         return self.type == desatomat_type.string
 
+def unescape_character(char:str):
+    if len(char) > 2:
+        raise ValueError('Character length greater than 2')
+    if char[0] == '\\': 
+        res_char = char.encode('latin-1', 'backslashreplace').decode('unicode-escape')
+        # The encoder will not decode regualar characters.
+        # If it doesn't the length will be 2
+        if len(res_char) == 2:
+            return res_char[-1]
+        else:
+            return res_char
+    else:
+        return char
+
 EPSILON = GrammerType("epsilon", desatomat_type.epsilon)
 
 def compute_first(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
@@ -399,9 +413,9 @@ def construct_parse_table(grammar: Dict[str, OrderedSet[HashableList[GrammerType
     
     return parse_table
 
-def left_factor(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
+def left_factor(grammar: Dict[str, Set[List[GrammerType]]]):
     new_grammar = {}
-    updated = False
+    was_updated = False
     for non_terminal, productions in grammar.items():
         new_productions = []
         prefixes = defaultdict(OrderedSet)
@@ -423,18 +437,16 @@ def left_factor(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
             if len(suffixes) == 1:
                 new_productions.append(HashableList(prefix) + HashableList(suffixes)[0])
             else:
-                updated = True
-                i = 2
-                new_non_terminal = GrammerType(f"{non_terminal}_{i}", desatomat_type.non_terminal)
+                was_updated = True
+                new_non_terminal = GrammerType(f"{non_terminal}_{prefix[0]}", desatomat_type.non_terminal)
                 while new_non_terminal in grammar or new_non_terminal in new_grammar:
-                    new_non_terminal.value = f"{non_terminal}_{i}"
-                    i += 1
+                    new_non_terminal.value = f"{non_terminal}_{prefix[0]}"
                 new_productions.append(HashableList(prefix) + HashableList([new_non_terminal]))
                 new_grammar[new_non_terminal] = suffixes
         
         new_grammar[non_terminal] = new_productions
     
-    return new_grammar, updated
+    return new_grammar, was_updated
 
 def eliminate_left_recursion(grammar: Dict[str, OrderedSet[HashableList[GrammerType]]]):
     non_terminals = list(grammar.keys())
@@ -517,20 +529,6 @@ grammar = r"""
     WHITESPACES: /\s+/ 
     %ignore WHITESPACES
 """
-
-def unescape_character(char:str):
-    if len(char) > 2:
-        raise Exception('Character length greater than 2')
-    if char[0] == '\\': 
-        res_char = char.encode('latin-1', 'backslashreplace').decode('unicode-escape')
-        # The encoder will not decode regualar characters.
-        # If it doesn't the length will be 2
-        if len(res_char) == 2:
-            return res_char[-1]
-        else:
-            return res_char
-    else:
-        return char
 
 class SpaceTransformer(Transformer):
     def WHITESPACES(self, tok: Token):
