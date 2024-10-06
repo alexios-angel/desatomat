@@ -61,6 +61,7 @@ class desatomat_type(Enum):
     epsilon = auto()
     positive_set = auto()
     negitive_set = auto()
+    action = auto()
     NUM_OF_ENUMS = auto()
 
 
@@ -257,8 +258,6 @@ class GrammerType:
         return f"GrammerType({self.value!r}, {self.type})"
  
     def __str__(self):
-        if self.type == desatomat_type.semantic_action:
-            return f"{{{self.value}}}"
         return self.value
 
     def is_non_terminal(self):
@@ -297,6 +296,9 @@ class GrammerType:
 
     def is_string(self):
         return self.type == desatomat_type.string
+    
+    def is_epsilon(self):
+        return self.type == desatomat_type.epsilon
 
 def unescape_character(char:str):
     if len(char) > 2:
@@ -489,7 +491,7 @@ def remove_immediate_left_recursion(grammar: Dict[str, Set[List[GrammerType]]], 
 def stringify_grammar(grammar: Dict[str, Set[List[GrammerType]]]):
     res = []
     for non_terminal, rules in grammar.items():
-        productions = f"\n{' '*4}| ".join([" ".join([str(s) for s in rule]) for rule in rules])
+        productions = f"\n{' '*4}| ".join([" ".join([f"<{s}>" if s.is_non_terminal() else f"[{s}]" if s.is_semantic_action() else s.value for s in rule]) for rule in rules])
         res.append(f"{non_terminal} ->\n{' '*(4+len("| "))}{productions}")
     return '\n'.join(res)
 
@@ -571,15 +573,10 @@ class SetTransformer(Transformer):
         
         return res 
 
-identifier_graph={
-    "nonterminal":{},
-    "terminal":{}
-}
-
 identifier_table={
-    "action":set(),
-    "nonterminal":{},
-    "terminal":{
+    desatomat_type.action:set(),
+    desatomat_type.non_terminal:{},
+    desatomat_type.terminal:{
         'other':GrammerType([], desatomat_type.negitive_set)
     }
 }
@@ -596,76 +593,118 @@ class add_identifers(Visitor):
         if len(tree.children) == 3:
             set_type = desatomat_type.negitive_set
 
-        identifier_table["terminal"][NAME.value] = GrammerType(set_contents, set_type)
+        identifier_table[desatomat_type.terminal][NAME.value] = GrammerType(set_contents, set_type)
     def rule_statement(self, tree):
         NAME = tree.children[0]
         name = NAME.value
 
         rules = tree.children[-1].children
-        nonterminal_table = identifier_table['nonterminal']
+        nonterminal_table = identifier_table[desatomat_type.non_terminal]
         if not name in nonterminal_table:
             nonterminal_table[name] = OrderedSet()
 
         nonterminal_table[name] |= OrderedSet(rules)
 """
 def make_graph(id_graph, id_table):
-    # Iterate over ["terminal", "nonterminal"]
-    for id_type in ["terminal", "nonterminal"]:
+    # Iterate over [desatomat_type.terminal, desatomat_type.non_terminal]
+    for id_type in [desatomat_type.terminal, desatomat_type.non_terminal]:
         for name, content in id_table[id_type].items():
             id_graph[id_type][name] = {"name":name, "content":content, "visited":False}
-    for terminal_dict in id_graph["nonterminal"].values():
+    for terminal_dict in id_graph[desatomat_type.non_terminal].values():
         for rule_index, rule in enumerate(terminal_dict['value']):
             for atom_index, atom in enumerate(rule):
                 match atom['type']:
                     case desatomat_type.terminal:
-                        id_graph['nonterminal'][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph['terminal'][atom['value']]
+                        id_graph[desatomat_type.non_terminal][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph[desatomat_type.terminal][atom['value']]
                     case desatomat_type.non_terminal:
-                        id_graph['nonterminal'][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph['nonterminal'][atom['value']]
+                        id_graph[desatomat_type.non_terminal][terminal_dict['name']]['content'][rule_index][atom_index] = id_graph[desatomat_type.non_terminal][atom['value']]
 
 """
 
 def add_semantic_action_identifiers(table):
     actions = set()
-    for x in table['nonterminal'].values():
+    for x in table[desatomat_type.non_terminal].values():
         for z in x:
             for symbol in z:
                 if symbol.is_semantic_action():
                     actions.add(symbol.value)
-    table['action'] = actions
+    table[desatomat_type.action] = actions
 
-def break_strings(table: Dict[str, Dict[str, List[List[GrammerType]]]]):
-    for nonterminal_name, nonterminal in table['nonterminal'].items():
+def break_strings(table: Dict[desatomat_type, Dict[str, List[List[GrammerType]]]]):
+    for nonterminal_name, nonterminal in table[desatomat_type.non_terminal].items():
         for rule_index, rule in list(enumerate(nonterminal)):
             for item_index, item in list(enumerate(rule)):
                 if item.is_string():
                     string = item.value
-                    production = list(table['nonterminal'][nonterminal_name])
+                    production = list(table[desatomat_type.non_terminal][nonterminal_name])
                     rule_table = production[rule_index]
                     rule_table.pop(item_index)
                     for character in reversed(string):
                         rule_table.insert(item_index, GrammerType(character, desatomat_type.atom))
 
+def get_indexed_nonterminals(productions: List[List[GrammerType]], table: Dict[desatomat_type, Dict[str, List[List[GrammerType]]]]):
+    others = set()
+    for prod in productions:
+        item = prod[0]
+        if item.is_non_terminal():
+            others |= get_indexed_nonterminals(table[desatomat_type.non_terminal][item.value], table)
+        elif item.is_atom():
+            others.add(item)
+        elif item.is_set() or item.is_named_terminal():
+            others |= set(table[desatomat_type.terminal][item.value].value)
+        else:
+            continue
+    return others
+            
+def get_other(table: Dict[desatomat_type, Dict[str, List[List[GrammerType]]]]):
+    other = set()
+    for nonterminal in table[desatomat_type.non_terminal].values():
+        other_index = set()
+        for production in nonterminal:
+            for item_index, item in list(enumerate(production)):
+                if item.value == "other":
+                    other_index.add(item_index)
+        for production in nonterminal:
+            for index in other_index:
+                item = production[index]
+                if item.is_non_terminal():
+                    ret = get_indexed_nonterminals(table[desatomat_type.non_terminal][item.value], table)
+                    if len(ret) == 0:
+                        raise Exception('Ambiguous pattern when trying to discover other')
+                    other |= ret
+                elif item.is_atom():
+                    other.add(item.value)
+                elif item.is_set() or item.is_named_terminal():
+                    other |= set(table[desatomat_type.terminal][item.value].value)
+                elif item.is_epsilon():
+                    continue
+                else:
+                    raise Exception('Unknown type when trying to discover other')
+    return other
+                
+            
+
 def verify_identifiers(table: Dict[str, Dict[str, List[List[GrammerType]] ] ]):
     ids = {
-        "nonterminal": set(),
-        "terminal": set()
+        desatomat_type.non_terminal: set(),
+        desatomat_type.terminal: set()
     }
-    for x in table['nonterminal'].values():
+    for x in table[desatomat_type.non_terminal].values():
         for z in x:
             for symbol in z:
                 if symbol.is_non_terminal():
-                    ids['nonterminal'].add(symbol.value)
+                    ids[desatomat_type.non_terminal].add(symbol.value)
                 elif symbol.is_named_terminal():
-                    ids['terminal'].add(symbol.value)
+                    ids[desatomat_type.terminal].add(symbol.value)
 
-    nonterminal_ids = ids['nonterminal']
-    defined_nonterminal_ids = set(table['nonterminal'].keys())
+    nonterminal_ids = ids[desatomat_type.non_terminal]
+    defined_nonterminal_ids = set(table[desatomat_type.non_terminal].keys())
     remaining_nonterminal_ids = nonterminal_ids - defined_nonterminal_ids
     if len(remaining_nonterminal_ids) != 0:
         raise Exception(f'Unknown nonterminal(s): {', '.join(remaining_nonterminal_ids)}')
     
-    terminal_ids = ids['terminal']
-    defined_terminal_ids = set(table['terminal'].keys())
+    terminal_ids = ids[desatomat_type.terminal]
+    defined_terminal_ids = set(table[desatomat_type.terminal].keys())
     remaining_terminal_ids = terminal_ids - defined_terminal_ids
     if len(remaining_terminal_ids) != 0:
         raise Exception(f'Unknown terminal(s): {', '.join(remaining_terminal_ids)}')
@@ -673,7 +712,7 @@ def verify_identifiers(table: Dict[str, Dict[str, List[List[GrammerType]] ] ]):
 def table_to_constexpr_cpp(table:Dict[str, List[List[List[Dict[str, desatomat_type]]]]], args):
     indentation = ' '*4
     terminal_strings = []
-    for terminal_name, terminal in table['terminal'].items():
+    for terminal_name, terminal in table[desatomat_type.terminal].items():
         res = ""
         type_map = {desatomat_type.negitive_set:"neg_set", desatomat_type.positive_set:"set"}
         terminal_type_str = ""
@@ -684,7 +723,7 @@ def table_to_constexpr_cpp(table:Dict[str, List[List[List[Dict[str, desatomat_ty
         res = f"using {terminal_name} = ctll::{terminal_type_str}<'{"', '".join(terminal['value'])}'>;"
         terminal_strings.append(res)
     rule_strings = []
-    for rule_name, rule_content in table['nonterminal'].items():
+    for rule_name, rule_content in table[desatomat_type.non_terminal].items():
         for rule in rule_content:
             rule_ll1_term = "ctll::term<' '>"
             #print(pformat(rule))
@@ -704,12 +743,12 @@ namespace {args.namespace} {{
 struct {args.grammer_name} {{
 
 {indentation}// NONTERMINALS:
-{indentation}{f"\n{indentation}".join([f"struct {nonterminal} {{}};" for nonterminal in table['nonterminal'].keys()])}
+{indentation}{f"\n{indentation}".join([f"struct {nonterminal} {{}};" for nonterminal in table[desatomat_type.non_terminal].keys()])}
 
-{indentation}// 'action' types:
-{indentation}{f"\n{indentation}".join([f"struct {action}: ctll::action {{}};" for action in table['action']])}
+{indentation}// desatomat_type.action types:
+{indentation}{f"\n{indentation}".join([f"struct {action}: ctll::action {{}};" for action in table[desatomat_type.action]])}
 
-{indentation}// 'terminal' types:
+{indentation}// desatomat_type.terminal types:
 {indentation}namespace terminal {{
 {indentation*2}{f"\n{indentation*2}".join(terminal_strings)}
 {indentation}}} // namespace terminal
@@ -905,22 +944,27 @@ def main():
     logger.debug("-"*50)
     logger.debug("Original Grammar:")
     logger.debug("-"*50)
-    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+    logger.debug(stringify_grammar(identifier_table[desatomat_type.non_terminal]))
     
-    identifier_table['nonterminal'] = eliminate_left_recursion(identifier_table['nonterminal']) 
+    identifier_table[desatomat_type.non_terminal] = eliminate_left_recursion(identifier_table[desatomat_type.non_terminal]) 
     logger.debug("-"*50)
     logger.debug("Grammar after eliminating left recursion:")
     logger.debug("-"*50)
-    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+    logger.debug(stringify_grammar(identifier_table[desatomat_type.non_terminal]))
     
     updated = True
     while updated:
-        identifier_table['nonterminal'], updated = left_factor(identifier_table['nonterminal']) 
+        identifier_table[desatomat_type.non_terminal], updated = left_factor(identifier_table[desatomat_type.non_terminal]) 
     logger.debug("-"*50)
     logger.debug("Factored Grammar")
     logger.debug("-"*50)
-    logger.debug(stringify_grammar(identifier_table['nonterminal']))
+    logger.debug(stringify_grammar(identifier_table[desatomat_type.non_terminal]))
 
+    other = identifier_table[desatomat_type.terminal]['other']
+    other.value = get_other(identifier_table)
+    logger.debug("-"*50)
+    logger.debug("Other:")
+    logger.debug(sorted(list(other.value)))
     #logger.info("Making graph")
     #make_graph(identifier_graph, identifier_table)
 
